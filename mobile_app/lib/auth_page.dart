@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'cupertino_toast.dart';
+
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
 
@@ -25,7 +27,11 @@ class _AuthPageState extends State<AuthPage> {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
     if (email.isEmpty || password.isEmpty) {
-      _toast('Please enter email and password.');
+      showAcadexToast(
+        context,
+        'Please enter email and password.',
+        variant: AcadexToastVariant.neutral,
+      );
       return;
     }
     setState(() => _busy = true);
@@ -38,8 +44,10 @@ class _AuthPageState extends State<AuthPage> {
         if (!mounted) return;
         final session = Supabase.instance.client.auth.currentSession;
         if (session == null) {
-          _toast(
+          showAcadexToast(
+            context,
             'Check your email to confirm, or disable email confirmation in Supabase Auth settings for dev.',
+            variant: AcadexToastVariant.neutral,
           );
         }
       } else {
@@ -49,31 +57,16 @@ class _AuthPageState extends State<AuthPage> {
         );
       }
     } on AuthException catch (e) {
-      _toast(e.message);
+      if (mounted) {
+        showAcadexToast(context, e.message, variant: AcadexToastVariant.danger);
+      }
     } catch (e) {
-      _toast(e.toString());
+      if (mounted) {
+        showAcadexToast(context, e.toString(), variant: AcadexToastVariant.danger);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-  }
-
-  void _toast(String message) {
-    showCupertinoDialog<void>(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Auth'),
-        content: Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: Text(message),
-        ),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override

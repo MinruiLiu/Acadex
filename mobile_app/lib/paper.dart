@@ -12,6 +12,10 @@ class Paper {
     this.grade,
     this.courseId,
     this.courseName,
+    this.paperYear,
+    this.semester,
+    this.paperVersion,
+    this.approvalStatus = 'approved',
   });
 
   final String id;
@@ -26,8 +30,14 @@ class Paper {
   final int? grade;
   final String? courseId;
   final String? courseName;
+  final int? paperYear;
+  final String? semester;
+  final String? paperVersion;
 
-  /// One line for list / preview: "School · Grade 10 · Course".
+  /// [pending] until an administrator approves; [approved] appears in Papers.
+  final String approvalStatus;
+
+  /// One line for list / preview: school, grade, course code, year, semester, version.
   String get metaDisplay {
     final parts = <String>[];
     if (schoolName != null && schoolName!.trim().isNotEmpty) {
@@ -38,6 +48,15 @@ class Paper {
     }
     if (courseName != null && courseName!.trim().isNotEmpty) {
       parts.add(courseName!.trim());
+    }
+    if (paperYear != null) {
+      parts.add('${paperYear!}');
+    }
+    if (semester != null && semester!.trim().isNotEmpty) {
+      parts.add(semester!.trim());
+    }
+    if (paperVersion != null && paperVersion!.trim().isNotEmpty) {
+      parts.add(paperVersion!.trim());
     }
     return parts.join(' · ');
   }
@@ -58,6 +77,10 @@ class Paper {
       grade: (row['grade'] as num?)?.toInt(),
       courseId: row['course_id'] as String?,
       courseName: row['course_name'] as String?,
+      paperYear: (row['paper_year'] as num?)?.toInt(),
+      semester: row['semester'] as String?,
+      paperVersion: row['paper_version'] as String?,
+      approvalStatus: (row['approval_status'] as String?) ?? 'approved',
     );
   }
 }
