@@ -1,7 +1,19 @@
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart' show Icons;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
+import 'auth_gate.dart';
+import 'env.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (Env.isConfigured) {
+    await Supabase.initialize(
+      url: Env.supabaseUrl,
+      anonKey: Env.supabaseAnonKey,
+    );
+  }
+
   runApp(const AcadexApp());
 }
 
@@ -10,118 +22,40 @@ class AcadexApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const CupertinoApp(
+    return CupertinoApp(
       debugShowCheckedModeBanner: false,
       title: 'Acadex',
-      theme: CupertinoThemeData(
+      theme: const CupertinoThemeData(
         brightness: Brightness.light,
         primaryColor: CupertinoColors.systemBlue,
       ),
-      home: HomePage(),
+      home: Env.isConfigured ? const AuthGate() : const _ConfigMissingPage(),
     );
   }
 }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  @override
-  Widget build(BuildContext context) {
-    return CupertinoTabScaffold(
-      tabBar: CupertinoTabBar(
-        backgroundColor: CupertinoColors.systemBackground.withOpacity(0.92),
-        items: [
-          BottomNavigationBarItem(
-            icon: _tabIcon(Icons.description_outlined),
-            activeIcon: _tabIcon(Icons.description),
-            label: 'Papers',
-          ),
-          BottomNavigationBarItem(
-            icon: _tabIcon(Icons.file_upload_outlined),
-            activeIcon: _tabIcon(Icons.file_upload),
-            label: 'My Uploads',
-          ),
-          BottomNavigationBarItem(
-            icon: _tabIcon(Icons.account_circle_outlined),
-            activeIcon: _tabIcon(Icons.account_circle),
-            label: 'User',
-          ),
-        ],
-      ),
-      tabBuilder: (context, index) {
-        switch (index) {
-          case 0:
-            return const _PapersTab();
-          case 1:
-            return const _UploadsTab();
-          default:
-            return const _UserTab();
-        }
-      },
-    );
-  }
-}
-
-Widget _tabIcon(IconData icon) {
-  return SizedBox(
-    height: 24,
-    width: 24,
-    child: Center(
-      child: Icon(icon, size: 22),
-    ),
-  );
-}
-
-class _PapersTab extends StatelessWidget {
-  const _PapersTab();
+class _ConfigMissingPage extends StatelessWidget {
+  const _ConfigMissingPage();
 
   @override
   Widget build(BuildContext context) {
-    return CupertinoPageScaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('Papers'),
+    return const CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: Text('Setup'),
         border: null,
       ),
-      child: const SafeArea(child: SizedBox.expand()),
-    );
-  }
-}
-
-class _UploadsTab extends StatelessWidget {
-  const _UploadsTab();
-
-  @override
-  Widget build(BuildContext context) {
-    return CupertinoPageScaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('My Uploads'),
-        border: null,
+      child: SafeArea(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'Run the app with:\n\n'
+            '--dart-define=SUPABASE_URL=your_url '
+            '--dart-define=SUPABASE_ANON_KEY=your_anon_key\n\n'
+            'See lib/env.dart.',
+            style: TextStyle(fontSize: 16, height: 1.35),
+          ),
+        ),
       ),
-      child: const SafeArea(child: SizedBox.expand()),
     );
   }
 }
-
-class _UserTab extends StatelessWidget {
-  const _UserTab();
-
-  @override
-  Widget build(BuildContext context) {
-    return CupertinoPageScaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('User'),
-        border: null,
-      ),
-      child: const SafeArea(child: SizedBox.expand()),
-    );
-  }
-}
-
