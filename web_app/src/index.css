@@ -137,12 +137,91 @@ button.secondary {
   color: #0f172a;
 }
 
+
+.username-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.username-inline strong {
+  word-break: break-word;
+}
+
+.username-edit-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #0f172a;
+  border-radius: 4px;
+  background: transparent;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.username-edit-btn:hover:not(:disabled) {
+  background: transparent;
+  color: #0f172a;
+}
+
+.username-edit-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
 .user-tab-row-btn {
   display: block;
   width: 100%;
   margin-top: 14px;
   margin-bottom: 10px;
   text-align: center;
+}
+
+.accounts-table-wrap {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 560px;
+}
+
+.accounts-table th,
+.accounts-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+}
+
+.accounts-table th {
+  background: #f8fafc;
+}
+
+.table-sort-btn {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.table-sort-btn:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.number-col {
+  text-align: right !important;
 }
 
 button.danger {
@@ -155,6 +234,15 @@ button.danger {
   display: grid;
   place-items: center;
   padding: 20px;
+}
+
+.auth-wrap label {
+  margin-top: 6px;
+  margin-bottom: 4px;
+}
+
+.auth-wrap label:first-of-type {
+  margin-top: 0;
 }
 
 .app-shell {
@@ -173,27 +261,92 @@ button.danger {
   gap: 10px;
 }
 
-.sidebar h2 {
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
-.sidebar button {
-  position: relative;
-  text-align: left;
-  background: transparent;
-  border: 1px solid #334155;
+.sidebar-brand h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  flex: 1;
+  min-width: 0;
 }
 
-.sidebar .tab-unread-dot {
+.sidebar-messages-btn {
+  flex-shrink: 0;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: transparent;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.sidebar-messages-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+
+.sidebar-messages-btn.active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #fff;
+}
+
+.sidebar-mail-icon {
+  display: block;
+  margin-top: 1px;
+}
+
+.sidebar-msg-unread-dot {
   position: absolute;
-  top: 8px;
-  right: 12px;
+  top: 5px;
+  right: 5px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #ef4444;
   box-shadow: 0 0 0 2px #0f172a;
   pointer-events: none;
+}
+
+.sidebar-messages-btn.active .sidebar-msg-unread-dot {
+  box-shadow: 0 0 0 2px #1d4ed8;
+}
+
+.sidebar-tab-with-badge {
+  position: relative;
+  display: block;
+}
+
+.sidebar-tab-with-badge > button {
+  width: 100%;
+}
+
+.sidebar-review-pending-dot {
+  top: 10px;
+  right: 11px;
+}
+
+.sidebar-tab-with-badge:has(> button.active) .sidebar-review-pending-dot {
+  box-shadow: 0 0 0 2px #1d4ed8;
+}
+
+.sidebar button {
+  text-align: left;
+  background: transparent;
+  border: 1px solid #334155;
 }
 
 .sidebar button.active {
@@ -261,6 +414,40 @@ button.danger {
   padding: 14px 16px;
 }
 
+.paper-admin-card {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.paper-admin-open {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.paper-admin-open strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paper-admin-delete {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 .upload-row {
   flex-direction: row;
   align-items: center;
@@ -270,6 +457,108 @@ button.danger {
 
 .card.upload-row.system-message-row {
   align-items: flex-end;
+}
+
+.system-messages-header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.system-messages-header h1 {
+  margin-bottom: 4px;
+}
+
+.system-messages-delete-all {
+  flex-shrink: 0;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.system-messages-list {
+  margin-top: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.system-message-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 0 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.system-message-item:last-child {
+  border-bottom: none;
+}
+
+.system-message-item.is-unread {
+  background: #ffffff;
+}
+
+.system-message-item.is-read {
+  background: #f1f5f9;
+}
+
+.system-messages-list .system-message-open {
+  flex: 1;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.system-message-title {
+  flex: 0 1 200px;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 14px;
+  color: #0f172a;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-message-item.is-read .system-message-title {
+  font-weight: 600;
+}
+
+.system-message-snippet {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 400;
+  font-size: 14px;
+  line-height: 1.35;
+  color: #64748b;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-message-meta-time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1.2;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.system-message-item .system-message-delete {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  margin-right: 4px;
 }
 
 .upload-main {
@@ -326,22 +615,6 @@ button.system-message-open {
   color: inherit;
   cursor: pointer;
   font: inherit;
-}
-
-.system-message-list-preview {
-  margin: 0;
-  text-align: left;
-  color: #64748b;
-  font-size: 14px;
-  line-height: 1.45;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  white-space: pre-line;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
 }
 
 .system-message-dialog-title {

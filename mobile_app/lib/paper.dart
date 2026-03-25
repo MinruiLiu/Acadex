@@ -56,7 +56,7 @@ class Paper {
       parts.add(semester!.trim());
     }
     if (paperVersion != null && paperVersion!.trim().isNotEmpty) {
-      parts.add(paperVersion!.trim());
+      parts.add('Version ${paperVersion!.trim()}');
     }
     return parts.join(' · ');
   }

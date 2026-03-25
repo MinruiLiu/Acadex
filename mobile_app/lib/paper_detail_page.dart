@@ -18,6 +18,7 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
   List<Paper>? _batch;
   late final PageController _pageController;
   int _pageIndex = 0;
+  Map<String, String> _uploaderNames = const {};
 
   @override
   void initState() {
@@ -36,6 +37,7 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
     try {
       final bid = widget.paper.uploadBatchId;
       if (bid == null) {
+        await _loadUploaderNames([widget.paper.uploadedBy]);
         if (!mounted) return;
         setState(() {
           _batch = [widget.paper];
@@ -53,6 +55,7 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
       final list = (rows as List<dynamic>)
           .map((e) => Paper.fromMap(Map<String, dynamic>.from(e as Map)))
           .toList();
+      await _loadUploaderNames(list.map((p) => p.uploadedBy));
 
       if (!mounted) return;
 
@@ -80,6 +83,39 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
     }
   }
 
+  Future<void> _loadUploaderNames(Iterable<String> uploaderIds) async {
+    final ids = uploaderIds
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList();
+    if (ids.isEmpty) {
+      if (!mounted) return;
+      setState(() => _uploaderNames = const {});
+      return;
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .from(kPublicUsersTable)
+          .select('id, username')
+          .inFilter('id', ids);
+      if (!mounted) return;
+      final next = <String, String>{};
+      for (final raw in rows as List<dynamic>) {
+        final row = Map<String, dynamic>.from(raw as Map);
+        final id = (row['id'] as String?)?.trim();
+        final username = (row['username'] as String?)?.trim();
+        if (id != null && id.isNotEmpty && username != null && username.isNotEmpty) {
+          next[id] = username;
+        }
+      }
+      setState(() => _uploaderNames = next);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _uploaderNames = const {});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_batch == null) {
@@ -95,6 +131,7 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
     final batch = _batch!;
     final current = batch[_pageIndex.clamp(0, batch.length - 1)];
     final showCounter = batch.length > 1;
+    final uploaderLabel = _uploaderNames[current.uploadedBy] ?? 'Unknown';
 
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
@@ -126,6 +163,17 @@ class _PaperDetailPageState extends State<PaperDetailPage> {
                   ),
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+              child: Text(
+                'Uploaded by ($uploaderLabel)',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                ),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
               child: Text(

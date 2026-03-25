@@ -13,6 +13,8 @@ import 'paper.dart';
 import 'paper_detail_page.dart';
 import 'paper_list_group.dart';
 
+final _usernamePattern = RegExp(r'^[a-zA-Z0-9_]{3,32}$');
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -25,6 +27,8 @@ class _HomePageState extends State<HomePage> {
   bool _profileReady = false;
   StreamSubscription<List<Map<String, dynamic>>>? _systemMessagesUnreadSub;
   bool _hasUnreadSystemMessages = false;
+  RealtimeChannel? _papersPendingChannel;
+  bool _hasPendingReviewUploads = false;
 
   bool get _isAdmin =>
       _profileReady && (_accountType?.toLowerCase() == 'administrator');
@@ -39,6 +43,9 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _systemMessagesUnreadSub?.cancel();
+    if (_papersPendingChannel != null) {
+      unawaited(Supabase.instance.client.removeChannel(_papersPendingChannel!));
+    }
     super.dispose();
   }
 
@@ -69,13 +76,65 @@ class _HomePageState extends State<HomePage> {
           .eq('id', user.id)
           .maybeSingle();
       if (!mounted) return;
+      final isAdministrator =
+          (row?['account_type'] as String?)?.toLowerCase() == 'administrator';
       setState(() {
         _accountType = row?['account_type'] as String?;
         _profileReady = true;
       });
+      if (!mounted) return;
+      if (isAdministrator) {
+        unawaited(_ensureReviewPendingTracking());
+      } else {
+        _teardownReviewPendingTracking();
+      }
     } catch (_) {
       if (mounted) setState(() => _profileReady = true);
     }
+  }
+
+  Future<void> _refreshPendingReviewFlag() async {
+    if (!_isAdmin) {
+      if (mounted) setState(() => _hasPendingReviewUploads = false);
+      return;
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .from(kPapersTable)
+          .select('id')
+          .eq('approval_status', 'pending')
+          .limit(1);
+      final has = rows.isNotEmpty;
+      if (mounted) setState(() => _hasPendingReviewUploads = has);
+    } catch (_) {
+      if (mounted) setState(() => _hasPendingReviewUploads = false);
+    }
+  }
+
+  void _teardownReviewPendingTracking() {
+    if (_papersPendingChannel != null) {
+      unawaited(Supabase.instance.client.removeChannel(_papersPendingChannel!));
+      _papersPendingChannel = null;
+    }
+    if (mounted) setState(() => _hasPendingReviewUploads = false);
+  }
+
+  Future<void> _ensureReviewPendingTracking() async {
+    await _refreshPendingReviewFlag();
+    if (!mounted || !_isAdmin) return;
+    if (_papersPendingChannel != null) {
+      unawaited(Supabase.instance.client.removeChannel(_papersPendingChannel!));
+    }
+    final ch = Supabase.instance.client.channel('review_uploads_pending_tab');
+    ch.onPostgresChanges(
+      event: PostgresChangeEvent.all,
+      schema: 'public',
+      table: kPapersTable,
+      callback: (_) {
+        unawaited(_refreshPendingReviewFlag());
+      },
+    ).subscribe();
+    _papersPendingChannel = ch;
   }
 
   @override
@@ -97,26 +156,19 @@ class _HomePageState extends State<HomePage> {
             label: 'Papers',
           ),
           BottomNavigationBarItem(
-            icon: _tabIcon(
-              _isAdmin ? CupertinoIcons.list_bullet : CupertinoIcons.tray_arrow_up,
-            ),
-            activeIcon: _tabIcon(
-              _isAdmin
-                  ? CupertinoIcons.list_bullet
-                  : CupertinoIcons.tray_arrow_up_fill,
-            ),
+            icon: _isAdmin
+                ? _reviewUploadsTabIcon(
+                    icon: CupertinoIcons.list_bullet,
+                    hasPending: _hasPendingReviewUploads,
+                  )
+                : _tabIcon(CupertinoIcons.tray_arrow_up),
+            activeIcon: _isAdmin
+                ? _reviewUploadsTabIcon(
+                    icon: CupertinoIcons.list_bullet,
+                    hasPending: _hasPendingReviewUploads,
+                  )
+                : _tabIcon(CupertinoIcons.tray_arrow_up_fill),
             label: _isAdmin ? 'Review Uploads' : 'My Uploads',
-          ),
-          BottomNavigationBarItem(
-            icon: _messagesTabIcon(
-              icon: CupertinoIcons.envelope,
-              hasUnread: _hasUnreadSystemMessages,
-            ),
-            activeIcon: _messagesTabIcon(
-              icon: CupertinoIcons.envelope_fill,
-              hasUnread: _hasUnreadSystemMessages,
-            ),
-            label: 'Messages',
           ),
           BottomNavigationBarItem(
             icon: _tabIcon(CupertinoIcons.person_crop_circle),
@@ -128,17 +180,24 @@ class _HomePageState extends State<HomePage> {
       tabBuilder: (context, index) {
         switch (index) {
           case 0:
-            return const _PapersTab();
+            return _PapersTab(
+              hasUnreadSystemMessages: _hasUnreadSystemMessages,
+              isAdmin: _isAdmin,
+            );
           case 1:
             return _isAdmin
-                ? const _ReviewUploadsTab()
-                : _UploadsTab(isAdministrator: _isAdmin);
+                ? _ReviewUploadsTab(hasUnreadSystemMessages: _hasUnreadSystemMessages)
+                : _UploadsTab(hasUnreadSystemMessages: _hasUnreadSystemMessages);
           case 2:
-            return const _SystemMessagesTab();
-          case 3:
-            return _UserTab(isAdmin: _isAdmin);
+            return _UserTab(
+              isAdmin: _isAdmin,
+              hasUnreadSystemMessages: _hasUnreadSystemMessages,
+            );
           default:
-            return const _PapersTab();
+            return _PapersTab(
+              hasUnreadSystemMessages: _hasUnreadSystemMessages,
+              isAdmin: _isAdmin,
+            );
         }
       },
     );
@@ -151,6 +210,36 @@ Widget _tabIcon(IconData icon) {
     width: 24,
     child: Center(
       child: Icon(icon, size: 22),
+    ),
+  );
+}
+
+Widget _reviewUploadsTabIcon({
+  required IconData icon,
+  required bool hasPending,
+}) {
+  return SizedBox(
+    height: 24,
+    width: 24,
+    child: Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        Icon(icon, size: 22),
+        if (hasPending)
+          Positioned(
+            right: -1,
+            top: -1,
+            child: Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: Color(0xFFEF4444),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+      ],
     ),
   );
 }
@@ -182,6 +271,32 @@ Widget _messagesTabIcon({required IconData icon, required bool hasUnread}) {
   );
 }
 
+/// Opens system messages (same as web sidebar mail icon); used in nav bar trailing.
+class _NavMailButton extends StatelessWidget {
+  const _NavMailButton({required this.hasUnread});
+
+  final bool hasUnread;
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoButton(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      minimumSize: Size.zero,
+      onPressed: () {
+        Navigator.of(context).push(
+          CupertinoPageRoute<void>(
+            builder: (ctx) => const _SystemMessagesTab(),
+          ),
+        );
+      },
+      child: _messagesTabIcon(
+        icon: CupertinoIcons.envelope,
+        hasUnread: hasUnread,
+      ),
+    );
+  }
+}
+
 String _formatSystemMessageTime(String iso) {
   final d = DateTime.tryParse(iso)?.toLocal();
   if (d == null) return iso;
@@ -193,8 +308,101 @@ String _formatSystemMessageTime(String iso) {
   return '$y-$mo-$da $h:$mi';
 }
 
+String _systemMessageListSnippet(String body) {
+  final s = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return s.isEmpty ? '—' : s;
+}
+
+Widget _systemMessageInboxRow(
+  BuildContext context,
+  Map<String, dynamic> row, {
+  required VoidCallback onOpen,
+  required VoidCallback onDelete,
+  required bool deleteBusy,
+}) {
+  final title = row['title'] as String? ?? '';
+  final body = row['body'] as String? ?? '';
+  final createdAt = row['created_at'] as String? ?? '';
+  final isUnread = row['read_at'] == null;
+  final labelColor = CupertinoColors.label.resolveFrom(context);
+  final secondary = CupertinoColors.secondaryLabel.resolveFrom(context);
+  final bg = isUnread
+      ? CupertinoColors.systemBackground.resolveFrom(context)
+      : CupertinoColors.systemGrey6.resolveFrom(context);
+
+  return ColoredBox(
+    color: bg,
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: CupertinoButton(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            minimumSize: Size.zero,
+            onPressed: onOpen,
+            child: Row(
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 132),
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: isUnread ? FontWeight.w700 : FontWeight.w600,
+                      color: labelColor,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _systemMessageListSnippet(body),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      color: secondary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _formatSystemMessageTime(createdAt),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: secondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        CupertinoButton(
+          padding: const EdgeInsets.fromLTRB(4, 8, 8, 8),
+          minimumSize: Size.zero,
+          onPressed: deleteBusy ? null : onDelete,
+          child: Icon(
+            CupertinoIcons.trash,
+            size: 20,
+            color: CupertinoColors.destructiveRed.resolveFrom(context),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _PapersTab extends StatefulWidget {
-  const _PapersTab();
+  const _PapersTab({
+    required this.hasUnreadSystemMessages,
+    required this.isAdmin,
+  });
+
+  final bool hasUnreadSystemMessages;
+  final bool isAdmin;
 
   @override
   State<_PapersTab> createState() => _PapersTabState();
@@ -210,6 +418,7 @@ class _PapersTabState extends State<_PapersTab> {
   String? _filterCourseName;
   int? _filterPaperYear;
   String? _filterSemester;
+  bool _adminDeleteBusy = false;
 
   @override
   void initState() {
@@ -236,6 +445,71 @@ class _PapersTabState extends State<_PapersTab> {
     setState(() {
       _papersStream = _createPapersStream();
     });
+  }
+
+  Future<void> _confirmAdminDeleteGroup(PaperListGroup group) async {
+    final n = group.count;
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Delete paper?'),
+        content: Text(
+          n > 1
+              ? 'This will remove $n file(s) from storage and the database.'
+              : 'This will remove the file from storage and the database.',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              await _deleteAdminGroup(group);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteAdminGroup(PaperListGroup group) async {
+    if (_adminDeleteBusy) return;
+    setState(() => _adminDeleteBusy = true);
+    try {
+      final ids = group.papers.map((p) => p.id).toList();
+      final paths = group.papers.map((p) => p.storagePath).toList();
+
+      await Supabase.instance.client.rpc(
+        'admin_notify_papers_deleted',
+        params: {'p_paper_ids': ids},
+      );
+
+      await Supabase.instance.client.rpc(
+        'admin_delete_papers',
+        params: {'p_paper_ids': ids},
+      );
+
+      await Supabase.instance.client.storage.from(kExamPapersBucket).remove(paths);
+
+      if (mounted) await _onRefresh();
+      if (mounted) {
+        showAcadexToast(
+          context,
+          group.count > 1 ? 'Papers deleted' : 'Paper deleted',
+          variant: AcadexToastVariant.danger,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showAcadexToast(context, e.toString(), variant: AcadexToastVariant.danger);
+      }
+    } finally {
+      if (mounted) setState(() => _adminDeleteBusy = false);
+    }
   }
 
   List<Paper> _applyPapersFilters(List<Paper> papers) {
@@ -486,10 +760,16 @@ class _PapersTabState extends State<_PapersTab> {
       navigationBar: CupertinoNavigationBar(
         middle: const Text('Papers'),
         border: null,
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _onRefresh,
-          child: const Icon(CupertinoIcons.arrow_clockwise),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _NavMailButton(hasUnread: widget.hasUnreadSystemMessages),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              onPressed: _onRefresh,
+              child: const Icon(CupertinoIcons.arrow_clockwise),
+            ),
+          ],
         ),
       ),
       child: SafeArea(
@@ -564,70 +844,97 @@ class _PapersTabState extends State<_PapersTab> {
                             horizontal: 16,
                             vertical: 6,
                           ),
-                          child: CupertinoButton(
-                            padding: EdgeInsets.zero,
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                CupertinoPageRoute<void>(
-                                  builder: (context) => PaperDetailPage(
-                                    paper: group.opener,
-                                  ),
-                                ),
-                              );
-                            },
-                            child: Container(
-                              width: double.infinity,
-                              alignment: Alignment.centerLeft,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: CupertinoColors
-                                    .secondarySystemGroupedBackground
-                                    .resolveFrom(context),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (group.opener.hasMetaDisplay) ...[
-                                    Text(
-                                      group.opener.metaDisplay,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w500,
-                                        color: CupertinoColors.systemBlue,
+                          child: Container(
+                            width: double.infinity,
+                            decoration: BoxDecoration(
+                              color: CupertinoColors
+                                  .secondarySystemGroupedBackground
+                                  .resolveFrom(context),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: CupertinoButton(
+                                    padding: EdgeInsets.zero,
+                                    onPressed: () {
+                                      Navigator.of(context).push(
+                                        CupertinoPageRoute<void>(
+                                          builder: (context) => PaperDetailPage(
+                                            paper: group.opener,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(14),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          if (group.opener.hasMetaDisplay) ...[
+                                            Text(
+                                              group.opener.metaDisplay,
+                                              style: const TextStyle(
+                                                fontSize: 14,
+                                                fontWeight: FontWeight.w500,
+                                                color: CupertinoColors.systemBlue,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                          ],
+                                          Text(
+                                            group.listTitle,
+                                            style: TextStyle(
+                                              fontSize: 17,
+                                              fontWeight: FontWeight.w600,
+                                              color: CupertinoColors.label
+                                                  .resolveFrom(context),
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            group.latestCreatedAt
+                                                .toLocal()
+                                                .toString(),
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              color: CupertinoColors.secondaryLabel,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            group.count > 1
+                                                ? 'Tap to preview ${group.count} items'
+                                                : 'Tap to open',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              color: CupertinoColors.systemBlue,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                    const SizedBox(height: 6),
-                                  ],
-                                  Text(
-                                    group.listTitle,
-                                    style: TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w600,
-                                      color:
-                                          CupertinoColors.label.resolveFrom(context),
+                                  ),
+                                ),
+                                if (widget.isAdmin)
+                                  CupertinoButton(
+                                    padding: EdgeInsets.zero,
+                                    minimumSize: Size.zero,
+                                    onPressed: _adminDeleteBusy
+                                        ? null
+                                        : () => _confirmAdminDeleteGroup(group),
+                                    child: Padding(
+                                      padding: const EdgeInsets.fromLTRB(0, 10, 14, 10),
+                                      child: Icon(
+                                        CupertinoIcons.trash,
+                                        color: CupertinoColors.destructiveRed
+                                            .resolveFrom(context),
+                                      ),
                                     ),
                                   ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    group.latestCreatedAt.toLocal().toString(),
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: CupertinoColors.secondaryLabel,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    group.count > 1
-                                        ? 'Tap to preview ${group.count} items'
-                                        : 'Tap to open',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: CupertinoColors.systemBlue,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              ],
                             ),
                           ),
                         );
@@ -646,9 +953,9 @@ class _PapersTabState extends State<_PapersTab> {
 }
 
 class _UploadsTab extends StatefulWidget {
-  const _UploadsTab({required this.isAdministrator});
+  const _UploadsTab({required this.hasUnreadSystemMessages});
 
-  final bool isAdministrator;
+  final bool hasUnreadSystemMessages;
 
   @override
   State<_UploadsTab> createState() => _UploadsTabState();
@@ -1101,26 +1408,57 @@ class _UploadsTabState extends State<_UploadsTab> {
         insertedIds.add(ins['id'] as String);
       }
 
-      if (!widget.isAdministrator && insertedIds.isNotEmpty) {
-        await Supabase.instance.client.rpc(
-          'notify_upload_pending_review',
-          params: {'p_paper_ids': insertedIds},
-        );
-      }
-
-      if (!mounted) return;
-      _titleController.clear();
-      await _refreshMyUploads();
-      if (!mounted) return;
-      showAcadexToast(
-        context,
-        widget.isAdministrator
-            ? (files.length > 1 ? '${files.length} files published' : 'File published')
-            : (files.length > 1
+      if (insertedIds.isNotEmpty) {
+        final statRows = await Supabase.instance.client
+            .from(kPapersTable)
+            .select('approval_status')
+            .inFilter('id', insertedIds);
+        final list = statRows as List<dynamic>;
+        if (list.length != insertedIds.length) {
+          throw StateError('Could not verify upload status.');
+        }
+        final statuses = list
+            .map((e) => (e as Map)['approval_status'] as String)
+            .toList();
+        final allApproved = statuses.every((s) => s == 'approved');
+        final allPending = statuses.every((s) => s == 'pending');
+        if (allPending) {
+          await Supabase.instance.client.rpc(
+            'notify_upload_pending_review',
+            params: {'p_paper_ids': insertedIds},
+          );
+        }
+        if (!mounted) return;
+        _titleController.clear();
+        await _refreshMyUploads();
+        if (!mounted) return;
+        if (allApproved) {
+          showAcadexToast(
+            context,
+            files.length > 1 ? '${files.length} files published' : 'File published',
+            variant: AcadexToastVariant.success,
+          );
+        } else if (allPending) {
+          showAcadexToast(
+            context,
+            files.length > 1
                 ? '${files.length} files submitted for review'
-                : 'Submitted for review'),
-        variant: AcadexToastVariant.success,
-      );
+                : 'Submitted for review',
+            variant: AcadexToastVariant.success,
+          );
+        } else {
+          showAcadexToast(
+            context,
+            'Upload complete.',
+            variant: AcadexToastVariant.success,
+          );
+        }
+      } else {
+        if (!mounted) return;
+        _titleController.clear();
+        await _refreshMyUploads();
+        if (!mounted) return;
+      }
     } catch (e) {
       if (!mounted) return;
       showAcadexToast(context, e.toString(), variant: AcadexToastVariant.danger);
@@ -1287,9 +1625,10 @@ class _UploadsTabState extends State<_UploadsTab> {
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('My Uploads'),
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('My Uploads'),
         border: null,
+        trailing: _NavMailButton(hasUnread: widget.hasUnreadSystemMessages),
       ),
       child: SafeArea(
         child: Stack(
@@ -1517,7 +1856,9 @@ class _UploadsTabState extends State<_UploadsTab> {
 }
 
 class _ReviewUploadsTab extends StatefulWidget {
-  const _ReviewUploadsTab();
+  const _ReviewUploadsTab({required this.hasUnreadSystemMessages});
+
+  final bool hasUnreadSystemMessages;
 
   @override
   State<_ReviewUploadsTab> createState() => _ReviewUploadsTabState();
@@ -1720,9 +2061,10 @@ class _ReviewUploadsTabState extends State<_ReviewUploadsTab> {
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('Review Uploads'),
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('Review Uploads'),
         border: null,
+        trailing: _NavMailButton(hasUnread: widget.hasUnreadSystemMessages),
       ),
       child: SafeArea(
         child: Stack(
@@ -1868,6 +2210,52 @@ class _SystemMessagesTabState extends State<_SystemMessagesTab> {
     }
   }
 
+  Future<void> _confirmDeleteAllMessages() async {
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Delete all messages?'),
+        content: const Text('This will remove every message from your inbox.'),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              await _deleteAllMessages();
+            },
+            child: const Text('Delete all'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteAllMessages() async {
+    if (_deleteBusy) return;
+    setState(() => _deleteBusy = true);
+    try {
+      await Supabase.instance.client.from(kSystemMessagesTable).delete().eq('user_id', _userId);
+      if (mounted) {
+        setState(() => _stream = _createStream());
+        showAcadexToast(
+          context,
+          'All messages deleted',
+          variant: AcadexToastVariant.success,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        showAcadexToast(context, e.toString(), variant: AcadexToastVariant.danger);
+      }
+    } finally {
+      if (mounted) setState(() => _deleteBusy = false);
+    }
+  }
+
   Stream<List<Map<String, dynamic>>> _createStream() {
     return Supabase.instance.client
         .from(kSystemMessagesTable)
@@ -1884,9 +2272,23 @@ class _SystemMessagesTabState extends State<_SystemMessagesTab> {
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('System Messages'),
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('System Messages'),
         border: null,
+        trailing: CupertinoButton(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          minimumSize: Size.zero,
+          onPressed: _deleteBusy ? null : _confirmDeleteAllMessages,
+          child: Text(
+            'Delete all',
+            style: TextStyle(
+              fontSize: 16,
+              color: _deleteBusy
+                  ? CupertinoColors.quaternaryLabel.resolveFrom(context)
+                  : CupertinoColors.activeBlue.resolveFrom(context),
+            ),
+          ),
+        ),
       ),
       child: SafeArea(
         child: StreamBuilder<List<Map<String, dynamic>>>(
@@ -1929,105 +2331,51 @@ class _SystemMessagesTabState extends State<_SystemMessagesTab> {
                 CupertinoSliverRefreshControl(onRefresh: _onRefresh),
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                  sliver: SliverList.separated(
-                    itemCount: list.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) {
-                      final row = list[i];
-                      final messageId = row['id'] as String? ?? '';
-                      final title = row['title'] as String? ?? '';
-                      final body = row['body'] as String? ?? '';
-                      final createdAt = row['created_at'] as String? ?? '';
-                      final isUnread = row['read_at'] == null;
-                      return Container(
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.secondarySystemGroupedBackground
-                              .resolveFrom(context),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: CupertinoColors.separator.resolveFrom(context),
-                          ),
+                  sliver: SliverToBoxAdapter(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: CupertinoColors.separator.resolveFrom(context),
                         ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.end,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Expanded(
-                              child: CupertinoButton(
-                                padding: const EdgeInsets.all(14),
-                                onPressed: () {
+                            for (var i = 0; i < list.length; i++) ...[
+                              if (i > 0)
+                                Container(
+                                  height: 1,
+                                  color: CupertinoColors.separator.resolveFrom(context),
+                                ),
+                              _systemMessageInboxRow(
+                                context,
+                                list[i],
+                                deleteBusy: _deleteBusy,
+                                onDelete: () => _confirmDeleteMessage(
+                                  list[i]['id'] as String? ?? '',
+                                ),
+                                onOpen: () {
+                                  final r = list[i];
                                   Navigator.of(context).push(
                                     CupertinoPageRoute<void>(
                                       builder: (context) => _SystemMessageDetailPage(
-                                        messageId: messageId,
-                                        title: title,
-                                        body: body,
-                                        createdAt: createdAt,
+                                        messageId: r['id'] as String? ?? '',
+                                        title: r['title'] as String? ?? '',
+                                        body: r['body'] as String? ?? '',
+                                        createdAt: r['created_at'] as String? ?? '',
                                       ),
                                     ),
                                   );
                                 },
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              title,
-                                              softWrap: true,
-                                              style: TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: isUnread
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w600,
-                                                color: CupertinoColors.label,
-                                              ),
-                                            ),
-                                          ),
-                                          Text(
-                                            _formatSystemMessageTime(createdAt),
-                                            style: const TextStyle(
-                                              fontSize: 13,
-                                              color: CupertinoColors.secondaryLabel,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        body,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        softWrap: true,
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          height: 1.45,
-                                          color: CupertinoColors.secondaryLabel,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
                               ),
-                            ),
-                            CupertinoButton(
-                              padding: const EdgeInsets.fromLTRB(4, 10, 10, 10),
-                              minimumSize: Size.zero,
-                              onPressed: _deleteBusy
-                                  ? null
-                                  : () => _confirmDeleteMessage(messageId),
-                              child: Icon(
-                                CupertinoIcons.trash,
-                                color: CupertinoColors.destructiveRed.resolveFrom(context),
-                              ),
-                            ),
+                            ],
                           ],
                         ),
-                      );
-                    },
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -2113,9 +2461,13 @@ class _SystemMessageDetailPageState extends State<_SystemMessageDetailPage> {
 }
 
 class _UserTab extends StatefulWidget {
-  const _UserTab({required this.isAdmin});
+  const _UserTab({
+    required this.isAdmin,
+    required this.hasUnreadSystemMessages,
+  });
 
   final bool isAdmin;
+  final bool hasUnreadSystemMessages;
 
   @override
   State<_UserTab> createState() => _UserTabState();
@@ -2123,7 +2475,104 @@ class _UserTab extends StatefulWidget {
 
 class _UserTabState extends State<_UserTab> {
   String? _accountType;
+  String? _username;
   bool _loadingProfile = true;
+
+  Future<void> _editUsername() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+    final controller = TextEditingController(text: _username ?? '');
+    var secondConfirm = false;
+    var busy = false;
+
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => CupertinoAlertDialog(
+            title: const Text('Edit username'),
+            content: Column(
+              children: [
+                const SizedBox(height: 8),
+                CupertinoTextField(
+                  controller: controller,
+                  placeholder: '3–32 letters, numbers, _',
+                  autocorrect: false,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  secondConfirm
+                      ? 'Tap confirm again to update username.'
+                      : 'Username can contain letters, numbers, and underscores only.',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: CupertinoColors.secondaryLabel,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              CupertinoDialogAction(
+                onPressed: busy ? null : () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel'),
+              ),
+              CupertinoDialogAction(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        final next = controller.text.trim();
+                        if (!_usernamePattern.hasMatch(next)) {
+                          showAcadexToast(
+                            context,
+                            'Username must be 3–32 characters: letters, numbers, and underscores only.',
+                            variant: AcadexToastVariant.neutral,
+                          );
+                          return;
+                        }
+                        if (!secondConfirm) {
+                          setDialogState(() => secondConfirm = true);
+                          return;
+                        }
+                        setDialogState(() => busy = true);
+                        try {
+                          await Supabase.instance.client
+                              .from(kPublicUsersTable)
+                              .update({'username': next})
+                              .eq('id', user.id);
+                          if (!mounted) return;
+                          setState(() => _username = next);
+                          if (ctx.mounted) Navigator.of(ctx).pop();
+                          showAcadexToast(
+                            context,
+                            'Username updated',
+                            variant: AcadexToastVariant.success,
+                          );
+                        } catch (e) {
+                          if (mounted) {
+                            showAcadexToast(
+                              context,
+                              e.toString(),
+                              variant: AcadexToastVariant.danger,
+                            );
+                          }
+                        } finally {
+                          if (mounted) {
+                            setDialogState(() => busy = false);
+                          }
+                        }
+                      },
+                child: Text(
+                  busy
+                      ? 'Saving...'
+                      : (secondConfirm ? 'Confirm Again' : 'Confirm'),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   @override
   void initState() {
@@ -2138,6 +2587,7 @@ class _UserTabState extends State<_UserTab> {
         setState(() {
           _loadingProfile = false;
           _accountType = null;
+          _username = null;
         });
       }
       return;
@@ -2145,12 +2595,13 @@ class _UserTabState extends State<_UserTab> {
     try {
       final row = await Supabase.instance.client
           .from(kPublicUsersTable)
-          .select('account_type')
+          .select('account_type, username')
           .eq('id', user.id)
           .maybeSingle();
       if (!mounted) return;
       setState(() {
         _accountType = row?['account_type'] as String?;
+        _username = row?['username'] as String?;
         _loadingProfile = false;
       });
     } catch (_) {
@@ -2158,6 +2609,7 @@ class _UserTabState extends State<_UserTab> {
         setState(() {
           _loadingProfile = false;
           _accountType = null;
+          _username = null;
         });
       }
     }
@@ -2167,17 +2619,67 @@ class _UserTabState extends State<_UserTab> {
   Widget build(BuildContext context) {
     final user = Supabase.instance.client.auth.currentUser;
     final email = user?.email ?? '';
+    final usernameLine = _loadingProfile ? '…' : (_username ?? '—');
 
     return CupertinoPageScaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground,
-      navigationBar: const CupertinoNavigationBar(
-        middle: Text('User'),
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('User'),
         border: null,
+        trailing: _NavMailButton(hasUnread: widget.hasUnreadSystemMessages),
       ),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
+            Text(
+              'Username',
+              style: TextStyle(
+                fontSize: 13,
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                Text(
+                  usernameLine,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  color: CupertinoColors.transparent,
+                  borderRadius: BorderRadius.circular(4),
+                  pressedOpacity: 0.55,
+                  onPressed: _loadingProfile ? null : _editUsername,
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: CupertinoColors.black,
+                        width: 1,
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Icon(
+                      CupertinoIcons.pencil,
+                      size: 13,
+                      color: CupertinoColors.black,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
             Text(
               email.isEmpty ? 'Not signed in' : email,
               style: const TextStyle(fontSize: 17),
@@ -2199,7 +2701,10 @@ class _UserTabState extends State<_UserTab> {
                 onPressed: () {
                   Navigator.of(context).push(
                     CupertinoPageRoute<void>(
-                      builder: (context) => const _UploadsTab(isAdministrator: true),
+                      builder: (context) => _UploadsTab(
+                        hasUnreadSystemMessages:
+                            widget.hasUnreadSystemMessages,
+                      ),
                     ),
                   );
                 },

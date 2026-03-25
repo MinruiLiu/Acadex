@@ -10,9 +10,38 @@ class AuthPage extends StatefulWidget {
   State<AuthPage> createState() => _AuthPageState();
 }
 
+Widget _authFieldLabel(BuildContext context, String text, {required bool requiredField}) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 4),
+    child: RichText(
+      text: TextSpan(
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: CupertinoColors.label.resolveFrom(context),
+        ),
+        children: [
+          TextSpan(text: text),
+          if (requiredField)
+            TextSpan(
+              text: ' *',
+              style: TextStyle(
+                color: CupertinoColors.systemRed.resolveFrom(context),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+final _usernameRe = RegExp(r'^[a-zA-Z0-9_]{3,32}$');
+
 class _AuthPageState extends State<AuthPage> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _usernameController = TextEditingController();
   bool _signUp = false;
   bool _busy = false;
 
@@ -20,6 +49,7 @@ class _AuthPageState extends State<AuthPage> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _usernameController.dispose();
     super.dispose();
   }
 
@@ -34,12 +64,25 @@ class _AuthPageState extends State<AuthPage> {
       );
       return;
     }
+    if (_signUp) {
+      final username = _usernameController.text.trim();
+      if (username.isNotEmpty && !_usernameRe.hasMatch(username)) {
+        showAcadexToast(
+          context,
+          'Username must be 3–32 characters: letters, numbers, and underscores only.',
+          variant: AcadexToastVariant.neutral,
+        );
+        return;
+      }
+    }
     setState(() => _busy = true);
     try {
       if (_signUp) {
+        final username = _usernameController.text.trim();
         await Supabase.instance.client.auth.signUp(
           email: email,
           password: password,
+          data: username.isEmpty ? {} : {'username': username},
         );
         if (!mounted) return;
         final session = Supabase.instance.client.auth.currentSession;
@@ -89,6 +132,7 @@ class _AuthPageState extends State<AuthPage> {
               ),
             ),
             const SizedBox(height: 24),
+            _authFieldLabel(context, 'Email', requiredField: true),
             CupertinoTextField(
               controller: _emailController,
               placeholder: 'Email',
@@ -96,7 +140,18 @@ class _AuthPageState extends State<AuthPage> {
               autocorrect: false,
               autofillHints: const [AutofillHints.email],
             ),
-            const SizedBox(height: 12),
+            if (_signUp) ...[
+              const SizedBox(height: 8),
+              _authFieldLabel(context, 'Username', requiredField: false),
+              CupertinoTextField(
+                controller: _usernameController,
+                placeholder: 'Optional · 3–32 letters, numbers, _',
+                autocorrect: false,
+                autofillHints: const [AutofillHints.username],
+              ),
+            ],
+            const SizedBox(height: 8),
+            _authFieldLabel(context, 'Password', requiredField: true),
             CupertinoTextField(
               controller: _passwordController,
               placeholder: 'Password',
@@ -113,7 +168,10 @@ class _AuthPageState extends State<AuthPage> {
             CupertinoButton(
               onPressed: _busy
                   ? null
-                  : () => setState(() => _signUp = !_signUp),
+                  : () => setState(() {
+                      _signUp = !_signUp;
+                      if (!_signUp) _usernameController.clear();
+                    }),
               child: Text(
                 _signUp
                     ? 'Have an account? Sign in'

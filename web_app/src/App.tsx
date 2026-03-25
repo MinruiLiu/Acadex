@@ -12,7 +12,7 @@ import { createClient } from '@supabase/supabase-js'
 import type { FormEvent } from 'react'
 import type { Session } from '@supabase/supabase-js'
 
-type AppTab = 'papers' | 'uploads' | 'user' | 'review' | 'messages'
+type AppTab = 'papers' | 'uploads' | 'user' | 'review' | 'messages' | 'accounts'
 
 type Paper = {
   id: string
@@ -41,6 +41,12 @@ type SystemMessage = {
 }
 
 type CatalogRow = { id: string; name: string }
+type AdminUserStatsRow = {
+  user_id: string
+  email: string
+  username: string | null
+  upload_count: number
+}
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as
@@ -61,6 +67,8 @@ const BUCKET = 'exam-papers'
 const ALLOWED_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg'])
 const GRADES = [9, 10, 11, 12]
 const SEMESTERS = ['Semester 1', 'Semester 2'] as const
+
+const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,32}$/
 
 function displayAccountTypeLabel(raw: string | null | undefined): string {
   if (raw == null || raw === '') return 'Account'
@@ -84,8 +92,13 @@ function toMeta(paper: Paper) {
   if (paper.course_name?.trim()) parts.push(paper.course_name.trim())
   if (paper.paper_year != null) parts.push(String(paper.paper_year))
   if (paper.semester?.trim()) parts.push(paper.semester.trim())
-  if (paper.paper_version?.trim()) parts.push(paper.paper_version.trim())
+  if (paper.paper_version?.trim()) parts.push(`Version ${paper.paper_version.trim()}`)
   return parts.join(' · ')
+}
+
+function systemMessageListSnippet(body: string): string {
+  const s = body.replace(/\s+/g, ' ').trim()
+  return s.length > 0 ? s : '—'
 }
 
 function groupPapers(papers: Paper[]) {
@@ -235,6 +248,7 @@ function ConfiguredApp() {
   const [session, setSession] = useState<Session | null>(null)
   const [tab, setTab] = useState<AppTab>('papers')
   const [accountType, setAccountType] = useState<string | null>(null)
+  const [profileUsername, setProfileUsername] = useState<string | null>(null)
   const [profileLoadState, setProfileLoadState] = useState<'idle' | 'loading' | 'done'>('idle')
 
   const isAdmin =
@@ -251,6 +265,7 @@ function ConfiguredApp() {
   useEffect(() => {
     if (!session?.user.id) {
       setAccountType(null)
+      setProfileUsername(null)
       setProfileLoadState('idle')
       return
     }
@@ -258,15 +273,18 @@ function ConfiguredApp() {
     setProfileLoadState('loading')
     void supabase!
       .from(USERS_TABLE_PUBLIC)
-      .select('account_type')
+      .select('account_type, username')
       .eq('id', session.user.id)
       .maybeSingle()
       .then(({ data, error }) => {
         if (cancelled) return
-        if (!error && data && typeof (data as { account_type?: string }).account_type === 'string') {
-          setAccountType((data as { account_type: string }).account_type)
+        if (!error && data) {
+          const row = data as { account_type?: string; username?: string }
+          setAccountType(typeof row.account_type === 'string' ? row.account_type : null)
+          setProfileUsername(typeof row.username === 'string' ? row.username : null)
         } else {
           setAccountType(null)
+          setProfileUsername(null)
         }
         setProfileLoadState('done')
       })
@@ -276,7 +294,7 @@ function ConfiguredApp() {
   }, [session?.user.id])
 
   useEffect(() => {
-    if (!isAdmin && tab === 'review') {
+    if (!isAdmin && (tab === 'review' || tab === 'accounts')) {
       setTab('papers')
     }
   }, [isAdmin, tab])
@@ -320,6 +338,39 @@ function ConfiguredApp() {
     }
   }, [session?.user.id, refreshSystemMessageUnread])
 
+  const [hasPendingReviewUploads, setHasPendingReviewUploads] = useState(false)
+
+  const refreshPendingReviewCount = useCallback(async () => {
+    if (!isAdmin) return
+    const { count, error } = await supabase!
+      .from(PAPERS_TABLE)
+      .select('id', { count: 'exact', head: true })
+      .eq('approval_status', 'pending')
+    if (error) return
+    setHasPendingReviewUploads((count ?? 0) > 0)
+  }, [isAdmin])
+
+  useEffect(() => {
+    if (!isAdmin || !session?.user.id) {
+      setHasPendingReviewUploads(false)
+      return
+    }
+    void refreshPendingReviewCount()
+    const channel = supabase!
+      .channel('papers_review_pending_sidebar')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: PAPERS_TABLE },
+        () => {
+          void refreshPendingReviewCount()
+        },
+      )
+      .subscribe()
+    return () => {
+      void supabase!.removeChannel(channel)
+    }
+  }, [isAdmin, session?.user.id, refreshPendingReviewCount])
+
   return (
     <ToastProvider>
       {!session ? (
@@ -327,42 +378,90 @@ function ConfiguredApp() {
       ) : (
         <div className="app-shell">
           <aside className="sidebar">
-            <h2>Acadex</h2>
+            <div className="sidebar-brand">
+              <h2>Acadex</h2>
+              <button
+                type="button"
+                className={tab === 'messages' ? 'sidebar-messages-btn active' : 'sidebar-messages-btn'}
+                onClick={() => setTab('messages')}
+                aria-label="System messages"
+                title="System messages"
+              >
+                <svg
+                  className="sidebar-mail-icon"
+                  width="22"
+                  height="22"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <rect width="20" height="14" x="2" y="5" rx="2" />
+                  <path d="m2 7 8 5.5L18 7" />
+                </svg>
+                {hasUnreadSystemMessages ? (
+                  <span className="sidebar-msg-unread-dot" aria-label="Unread messages" />
+                ) : null}
+              </button>
+            </div>
             <button className={tab === 'papers' ? 'active' : ''} onClick={() => setTab('papers')}>
               Papers
             </button>
             {isAdmin ? (
-              <button className={tab === 'review' ? 'active' : ''} onClick={() => setTab('review')}>
-                Review Uploads
-              </button>
+              <span className="sidebar-tab-with-badge">
+                <button
+                  type="button"
+                  className={tab === 'review' ? 'active' : ''}
+                  onClick={() => setTab('review')}
+                  aria-label={
+                    hasPendingReviewUploads
+                      ? 'Review Uploads (pending uploads)'
+                      : 'Review Uploads'
+                  }
+                >
+                  Review Uploads
+                </button>
+                {hasPendingReviewUploads ? (
+                  <span
+                    className="sidebar-msg-unread-dot sidebar-review-pending-dot"
+                    aria-hidden
+                  />
+                ) : null}
+              </span>
             ) : (
               <button className={tab === 'uploads' ? 'active' : ''} onClick={() => setTab('uploads')}>
                 My Uploads
               </button>
             )}
-            <button className={tab === 'messages' ? 'active' : ''} onClick={() => setTab('messages')}>
-              System Messages
-              {hasUnreadSystemMessages ? <span className="tab-unread-dot" aria-label="Unread messages" /> : null}
-            </button>
+            {isAdmin ? (
+              <button className={tab === 'accounts' ? 'active' : ''} onClick={() => setTab('accounts')}>
+                Accounts
+              </button>
+            ) : null}
             <button className={tab === 'user' ? 'active' : ''} onClick={() => setTab('user')}>
               User
             </button>
           </aside>
           <main className="content">
-            {tab === 'papers' && <PapersTab />}
-            {tab === 'uploads' && (
-              <UploadsTab userId={session.user.id} skipPendingNotification={isAdmin} />
-            )}
+            {tab === 'papers' && <PapersTab isAdmin={isAdmin} />}
+            {tab === 'uploads' && <UploadsTab userId={session.user.id} />}
             {tab === 'review' && <ReviewUploadsTab />}
+            {tab === 'accounts' && <AdminAccountsTab sessionUserId={session.user.id} />}
             {tab === 'messages' && (
               <SystemMessagesTab userId={session.user.id} onUnreadMayHaveChanged={refreshSystemMessageUnread} />
             )}
             {tab === 'user' && (
               <UserTab
                 email={session.user.email ?? ''}
+                username={profileUsername}
                 accountType={accountType}
                 profileLoading={profileLoadState !== 'done'}
                 isAdmin={isAdmin}
+                userId={session.user.id}
+                onUsernameUpdated={setProfileUsername}
                 onGoToUploads={() => setTab('uploads')}
               />
             )}
@@ -377,6 +476,7 @@ function AuthScreen() {
   const showToast = useToast()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [username, setUsername] = useState('')
   const [signUp, setSignUp] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -386,16 +486,36 @@ function AuthScreen() {
       showToast('Please enter email and password.', 'default')
       return
     }
+    if (signUp) {
+      const u = username.trim()
+      if (u.length > 0 && !USERNAME_PATTERN.test(u)) {
+        showToast(
+          'Username must be 3–32 characters: letters, numbers, and underscores only.',
+          'default',
+        )
+        return
+      }
+    }
     setBusy(true)
     try {
       if (signUp) {
-        const { data, error } = await supabase!.auth.signUp({ email, password })
+        const nameMeta = username.trim()
+        const { data, error } = await supabase!.auth.signUp({
+          email: email.trim(),
+          password,
+          ...(nameMeta
+            ? { options: { data: { username: nameMeta } } }
+            : {}),
+        })
         if (error) throw error
         if (!data.session) {
           showToast('Sign-up ok. Confirm email, or disable confirmation in Supabase for dev.', 'default')
         }
       } else {
-        const { error } = await supabase!.auth.signInWithPassword({ email, password })
+        const { error } = await supabase!.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        })
         if (error) throw error
       }
     } catch (err) {
@@ -409,7 +529,24 @@ function AuthScreen() {
     <div className="auth-wrap">
       <form className="panel" onSubmit={submit}>
         <h1>{signUp ? 'Sign up' : 'Sign in'}</h1>
+        <label>
+          Email <span className="required">*</span>
+        </label>
         <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
+        {signUp ? (
+          <>
+            <label>Username</label>
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Optional · 3–32 letters, numbers, _"
+              autoComplete="username"
+            />
+          </>
+        ) : null}
+        <label>
+          Password <span className="required">*</span>
+        </label>
         <input
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -417,7 +554,14 @@ function AuthScreen() {
           placeholder="Password"
         />
         <button disabled={busy}>{busy ? 'Loading...' : signUp ? 'Create account' : 'Sign in'}</button>
-        <button type="button" className="secondary" onClick={() => setSignUp((v) => !v)}>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            setSignUp((v) => !v)
+            setUsername('')
+          }}
+        >
           {signUp ? 'Have account? Sign in' : 'Need account? Sign up'}
         </button>
       </form>
@@ -425,7 +569,7 @@ function AuthScreen() {
   )
 }
 
-function PapersTab() {
+function PapersTab({ isAdmin }: { isAdmin: boolean }) {
   const showToast = useToast()
   const [papers, setPapers] = useState<Paper[]>([])
   const [loading, setLoading] = useState(true)
@@ -439,6 +583,8 @@ function PapersTab() {
   const [selectedSemester, setSelectedSemester] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const searchAreaRef = useRef<HTMLDivElement | null>(null)
+  const [pendingDeleteGroup, setPendingDeleteGroup] = useState<Paper[] | null>(null)
+  const [deletingGroup, setDeletingGroup] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -460,6 +606,60 @@ function PapersTab() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load()
   }, [])
+
+  async function adminDeleteGroup(group: Paper[]) {
+    if (deletingGroup) return
+    setDeletingGroup(true)
+    try {
+      const ids = group.map((g) => g.id)
+      const paths = group.map((g) => g.storage_path)
+
+      const { count: beforeCount, error: beforeErr } = await supabase!.from(PAPERS_TABLE).select('id', {
+        count: 'exact',
+        head: true,
+      }).in('id', ids)
+      if (beforeErr) throw beforeErr
+
+      const { error: notifyErr } = await supabase!.rpc('admin_notify_papers_deleted', {
+        p_paper_ids: ids,
+      })
+      if (notifyErr) throw notifyErr
+
+      const storageRes = await supabase!.storage.from(BUCKET).remove(paths)
+      if (storageRes.error) throw storageRes.error
+
+      const { error: deleteErr } = await supabase!.rpc('admin_delete_papers', {
+        p_paper_ids: ids,
+      })
+      if (deleteErr) throw deleteErr
+
+      const { count: afterCount, error: afterErr } = await supabase!.from(PAPERS_TABLE).select('id', {
+        count: 'exact',
+        head: true,
+      }).in('id', ids)
+      if (afterErr) throw afterErr
+
+      setSelectedGroup(null)
+      setSelectedIndex(0)
+      setPendingDeleteGroup(null)
+      await load()
+      if ((afterCount ?? 0) > 0) {
+        showToast(
+          `Delete finished but some records remain (${afterCount}/${beforeCount ?? '?'})`,
+          'danger',
+        )
+      } else {
+        showToast(
+          group.length > 1 ? 'Papers deleted' : 'Paper deleted',
+          'danger',
+        )
+      }
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), 'danger')
+    } finally {
+      setDeletingGroup(false)
+    }
+  }
 
   const schoolOptions = useMemo(
     () =>
@@ -609,19 +809,43 @@ function PapersTab() {
               group.length > 1
                 ? `${opener.title.replace(/\s\(\d+\)$/, '')} (${group.length} files)`
                 : opener.title
+            if (!isAdmin) {
+              return (
+                <button
+                  key={opener.id}
+                  className="card"
+                  onClick={() => {
+                    setSelectedGroup(group)
+                    setSelectedIndex(0)
+                  }}
+                >
+                  <strong>{title}</strong>
+                  <span>{toMeta(opener)}</span>
+                  <span>{new Date(latest.created_at).toLocaleString()}</span>
+                </button>
+              )
+            }
             return (
-              <button
-                key={opener.id}
-                className="card"
-                onClick={() => {
+              <div key={opener.id} className="card paper-admin-card">
+                <button type="button" className="paper-admin-open" onClick={() => {
                   setSelectedGroup(group)
                   setSelectedIndex(0)
-                }}
-              >
-                <strong>{title}</strong>
-                <span>{toMeta(opener)}</span>
-                <span>{new Date(latest.created_at).toLocaleString()}</span>
-              </button>
+                }}>
+                  <strong>{title}</strong>
+                  <span>{toMeta(opener)}</span>
+                  <span>{new Date(latest.created_at).toLocaleString()}</span>
+                </button>
+                <button
+                  type="button"
+                  className="icon-danger paper-admin-delete"
+                  aria-label="Delete paper"
+                  title="Delete paper"
+                  disabled={deletingGroup}
+                  onClick={() => setPendingDeleteGroup(group)}
+                >
+                  🗑
+                </button>
+              </div>
             )
           })}
         </div>
@@ -634,18 +858,41 @@ function PapersTab() {
           onClose={() => setSelectedGroup(null)}
         />
       )}
+      {pendingDeleteGroup && (
+        <div className="modal-backdrop">
+          <div className="modal modal-small">
+            <strong>Delete paper?</strong>
+            <p>
+              {pendingDeleteGroup.length > 1
+                ? `This will remove ${pendingDeleteGroup.length} file(s) from storage and the database.`
+                : 'This will remove the file from storage and the database.'}
+            </p>
+            <div className="row end">
+              <button
+                type="button"
+                className="secondary"
+                disabled={deletingGroup}
+                onClick={() => setPendingDeleteGroup(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={deletingGroup}
+                onClick={() => void adminDeleteGroup(pendingDeleteGroup)}
+              >
+                {deletingGroup ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
 
-function UploadsTab({
-  userId,
-  skipPendingNotification,
-}: {
-  userId: string
-  /** Administrator uploads are auto-approved; do not send "pending review" system message. */
-  skipPendingNotification: boolean
-}) {
+function UploadsTab({ userId }: { userId: string }) {
   const showToast = useToast()
   const [papers, setPapers] = useState<Paper[]>([])
   const [schools, setSchools] = useState<CatalogRow[]>([])
@@ -790,25 +1037,43 @@ function UploadsTab({
         if (insertErr) throw insertErr
         insertedIds.push((ins as { id: string }).id)
       }
-      if (!skipPendingNotification && insertedIds.length > 0) {
-        const { error: rpcErr } = await supabase!.rpc('notify_upload_pending_review', {
-          p_paper_ids: insertedIds,
-        })
-        if (rpcErr) throw rpcErr
+      if (insertedIds.length > 0) {
+        const { data: statRows, error: statErr } = await supabase!
+          .from(PAPERS_TABLE)
+          .select('approval_status')
+          .in('id', insertedIds)
+        if (statErr) throw statErr
+        if (!statRows?.length || statRows.length !== insertedIds.length) {
+          throw new Error('Could not verify upload status.')
+        }
+        const statuses = statRows.map((r) => (r as { approval_status: string }).approval_status)
+        const allApproved = statuses.every((s) => s === 'approved')
+        const allPending = statuses.every((s) => s === 'pending')
+        if (allPending) {
+          const { error: rpcErr } = await supabase!.rpc('notify_upload_pending_review', {
+            p_paper_ids: insertedIds,
+          })
+          if (rpcErr) throw rpcErr
+        }
+        setTitle('')
+        setSelectedFiles(null)
+        setCreatingUpload(false)
+        if (allApproved) {
+          showToast(
+            files.length > 1 ? `${files.length} files published` : 'File published',
+            'success',
+          )
+        } else if (allPending) {
+          showToast(
+            files.length > 1
+              ? `${files.length} files submitted for review`
+              : 'Submitted for review',
+            'success',
+          )
+        } else {
+          showToast('Upload complete.', 'success')
+        }
       }
-      setTitle('')
-      setSelectedFiles(null)
-      setCreatingUpload(false)
-      showToast(
-        skipPendingNotification
-          ? files.length > 1
-            ? `${files.length} files published`
-            : 'File published'
-          : files.length > 1
-            ? `${files.length} files submitted for review`
-            : 'Submitted for review',
-        'success',
-      )
       await loadMine()
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), 'danger')
@@ -1028,6 +1293,7 @@ function SystemMessagesTab({
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState<SystemMessage | null>(null)
   const [pendingDeleteMessage, setPendingDeleteMessage] = useState<SystemMessage | null>(null)
+  const [pendingDeleteAll, setPendingDeleteAll] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -1103,49 +1369,68 @@ function SystemMessagesTab({
     showToast('Message deleted', 'success')
   }
 
+  async function removeAllMessages() {
+    const { error } = await supabase!.from(SYSTEM_MESSAGES_TABLE).delete().eq('user_id', userId)
+    if (error) {
+      showToast(error.message, 'danger')
+      return
+    }
+    setPendingDeleteAll(false)
+    setPendingDeleteMessage(null)
+    setOpen(null)
+    setRows([])
+    onUnreadMayHaveChanged?.()
+    showToast('All messages deleted', 'success')
+  }
+
   return (
     <section className="panel">
-      <h1>System Messages</h1>
-      <p className="subtitle">Notifications from the system.</p>
+      <div className="system-messages-header">
+        <div>
+          <h1>System Messages</h1>
+          <p className="subtitle">Notifications from the system.</p>
+        </div>
+        <button
+          type="button"
+          className="secondary system-messages-delete-all"
+          disabled={loading || rows.length === 0}
+          onClick={() => setPendingDeleteAll(true)}
+        >
+          Delete all
+        </button>
+      </div>
       {loading ? (
         <p>Loading…</p>
       ) : rows.length === 0 ? (
         <p className="subtitle">No messages yet.</p>
       ) : (
-        <div className="list">
-          {rows.map((m) => (
-            <div key={m.id} className="card upload-row system-message-row">
-              <button type="button" className="system-message-open" onClick={() => void openMessage(m)}>
-                <div className="row between" style={{ alignItems: 'flex-start', gap: 12 }}>
-                  <strong
-                    style={{
-                      textAlign: 'left',
-                      flex: 1,
-                      minWidth: 0,
-                      fontWeight: m.read_at == null ? 700 : 600,
-                      wordBreak: 'break-word',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    {m.title}
-                  </strong>
-                  <span className="message-time" style={{ flexShrink: 0 }}>
+        <div className="system-messages-list">
+          {rows.map((m) => {
+            const isRead = m.read_at != null
+            return (
+              <div
+                key={m.id}
+                className={`system-message-item ${isRead ? 'is-read' : 'is-unread'}`}
+              >
+                <button type="button" className="system-message-open" onClick={() => void openMessage(m)}>
+                  <span className="system-message-title">{m.title}</span>
+                  <span className="system-message-snippet">{systemMessageListSnippet(m.body)}</span>
+                  <span className="system-message-meta-time">
                     {new Date(m.created_at).toLocaleString()}
                   </span>
-                </div>
-                <p className="system-message-list-preview">{m.body}</p>
-              </button>
-              <button
-                type="button"
-                className="icon-danger"
-                aria-label="Delete message"
-                title="Delete message"
-                onClick={() => setPendingDeleteMessage(m)}
-              >
-                🗑
-              </button>
-            </div>
-          ))}
+                </button>
+                <button
+                  type="button"
+                  className="icon-danger system-message-delete"
+                  aria-label="Delete message"
+                  title="Delete message"
+                  onClick={() => setPendingDeleteMessage(m)}
+                >
+                  🗑
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
       {open && (
@@ -1187,6 +1472,22 @@ function SystemMessagesTab({
               </button>
               <button type="button" className="danger" onClick={() => void removeMessage(pendingDeleteMessage)}>
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingDeleteAll && (
+        <div className="modal-backdrop">
+          <div className="modal modal-small">
+            <strong>Delete all messages?</strong>
+            <p>This will remove every message from your inbox.</p>
+            <div className="row end">
+              <button type="button" className="secondary" onClick={() => setPendingDeleteAll(false)}>
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => void removeAllMessages()}>
+                Delete all
               </button>
             </div>
           </div>
@@ -1369,25 +1670,84 @@ function ReviewUploadsTab() {
 
 function UserTab({
   email,
+  username,
   accountType,
   profileLoading,
   isAdmin,
+  userId,
+  onUsernameUpdated,
   onGoToUploads,
 }: {
   email: string
+  username: string | null
   accountType: string | null
   profileLoading: boolean
   isAdmin: boolean
+  userId: string
+  onUsernameUpdated: (next: string | null) => void
   onGoToUploads: () => void
 }) {
+  const showToast = useToast()
+  const [editingUsername, setEditingUsername] = useState(false)
+  const [pendingUsername, setPendingUsername] = useState('')
+  const [needsSecondConfirm, setNeedsSecondConfirm] = useState(false)
+  const [savingUsername, setSavingUsername] = useState(false)
+
   const typeLine = profileLoading
     ? 'Account type: …'
     : `Account type: ${displayAccountTypeLabel(accountType)}`
+  const usernameLine = profileLoading ? '…' : username ?? '—'
+
+  async function submitUsernameChange() {
+    const next = pendingUsername.trim()
+    if (!USERNAME_PATTERN.test(next)) {
+      showToast('Username must be 3–32 characters: letters, numbers, and underscores only.', 'default')
+      return
+    }
+    if (!needsSecondConfirm) {
+      setNeedsSecondConfirm(true)
+      return
+    }
+    setSavingUsername(true)
+    const { error } = await supabase!
+      .from(USERS_TABLE_PUBLIC)
+      .update({ username: next })
+      .eq('id', userId)
+    setSavingUsername(false)
+    if (error) {
+      showToast(error.message, 'danger')
+      return
+    }
+    onUsernameUpdated(next)
+    setEditingUsername(false)
+    setNeedsSecondConfirm(false)
+    showToast('Username updated', 'success')
+  }
 
   return (
     <section className="panel">
       <h1>User</h1>
-      <p>{email || 'Not signed in'}</p>
+      <p>
+        <span className="subtitle">Username</span>
+        <br />
+        <span className="username-inline">
+          <strong>{usernameLine}</strong>
+          <button
+            type="button"
+            className="username-edit-btn"
+            onClick={() => {
+              setEditingUsername(true)
+              setNeedsSecondConfirm(false)
+              setPendingUsername(username ?? '')
+            }}
+            aria-label="Edit username"
+            title="Edit username"
+          >
+            ✏
+          </button>
+        </span>
+      </p>
+      <p className="subtitle">{email || 'Not signed in'}</p>
       <p className="subtitle">{typeLine}</p>
       {isAdmin ? (
         <button type="button" className="secondary user-tab-row-btn" onClick={onGoToUploads}>
@@ -1397,6 +1757,140 @@ function UserTab({
       <button type="button" onClick={() => supabase!.auth.signOut()}>
         Sign out
       </button>
+
+      {editingUsername ? (
+        <div className="modal-backdrop">
+          <div className="modal modal-small">
+            <strong>Edit username</strong>
+            <p className="subtitle">3–32 characters: letters, numbers, underscore.</p>
+            <input
+              value={pendingUsername}
+              onChange={(e) => {
+                setPendingUsername(e.target.value)
+                setNeedsSecondConfirm(false)
+              }}
+              placeholder="New username"
+              autoFocus
+            />
+            {needsSecondConfirm ? (
+              <p className="subtitle">Click confirm again to apply this username.</p>
+            ) : null}
+            <div className="row end">
+              <button
+                type="button"
+                className="secondary"
+                disabled={savingUsername}
+                onClick={() => {
+                  setEditingUsername(false)
+                  setNeedsSecondConfirm(false)
+                }}
+              >
+                Cancel
+              </button>
+              <button type="button" disabled={savingUsername} onClick={() => void submitUsernameChange()}>
+                {savingUsername ? 'Saving…' : needsSecondConfirm ? 'Confirm Again' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function AdminAccountsTab({ sessionUserId }: { sessionUserId: string }) {
+  const showToast = useToast()
+  const [rows, setRows] = useState<AdminUserStatsRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [sortBy, setSortBy] = useState<'email' | 'username' | 'upload_count'>('upload_count')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  async function load() {
+    setLoading(true)
+    const { data, error } = await supabase!.rpc('admin_list_user_upload_stats')
+    if (error) {
+      showToast(error.message, 'danger')
+      setRows([])
+      setLoading(false)
+      return
+    }
+    const raw = ((data as AdminUserStatsRow[] | null) ?? []).filter((r) => r.user_id !== sessionUserId)
+    setRows(raw)
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stable load in this component scope
+  }, [])
+
+  function toggleSort(next: 'email' | 'username' | 'upload_count') {
+    if (sortBy === next) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+    setSortBy(next)
+    setSortDir(next === 'upload_count' ? 'desc' : 'asc')
+  }
+
+  const sorted = useMemo(() => {
+    const out = [...rows]
+    out.sort((a, b) => {
+      if (sortBy === 'upload_count') return a.upload_count - b.upload_count
+      if (sortBy === 'email') return a.email.localeCompare(b.email)
+      return (a.username ?? '').localeCompare(b.username ?? '')
+    })
+    if (sortDir === 'desc') out.reverse()
+    return out
+  }, [rows, sortBy, sortDir])
+
+  function sortMark(k: 'email' | 'username' | 'upload_count') {
+    if (sortBy !== k) return ''
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
+  }
+
+  return (
+    <section className="panel">
+      <h1>Accounts</h1>
+      <p className="subtitle">All other accounts and their total uploaded papers.</p>
+      {loading ? (
+        <p>Loading…</p>
+      ) : sorted.length === 0 ? (
+        <p className="subtitle">No other accounts.</p>
+      ) : (
+        <div className="accounts-table-wrap">
+          <table className="accounts-table">
+            <thead>
+              <tr>
+                <th>
+                  <button type="button" className="table-sort-btn" onClick={() => toggleSort('email')}>
+                    Email{sortMark('email')}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" className="table-sort-btn" onClick={() => toggleSort('username')}>
+                    Username{sortMark('username')}
+                  </button>
+                </th>
+                <th className="number-col">
+                  <button type="button" className="table-sort-btn" onClick={() => toggleSort('upload_count')}>
+                    Uploads{sortMark('upload_count')}
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => (
+                <tr key={r.user_id}>
+                  <td>{r.email}</td>
+                  <td>{r.username?.trim() ? r.username : '—'}</td>
+                  <td className="number-col">{r.upload_count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   )
 }
@@ -1416,6 +1910,7 @@ function PreviewModal({
   const current = papers[index]
   const [url, setUrl] = useState('')
   const [previewFailed, setPreviewFailed] = useState(false)
+  const [uploaderNames, setUploaderNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let mounted = true
@@ -1436,9 +1931,40 @@ function PreviewModal({
     }
   }, [current.id, current.storage_path, showToast])
 
+  useEffect(() => {
+    let active = true
+    const uploaderIds = Array.from(
+      new Set(papers.map((p) => p.uploaded_by).filter((id) => id.trim().length > 0)),
+    )
+    if (uploaderIds.length === 0) {
+      setUploaderNames({})
+      return
+    }
+    supabase!
+      .from(USERS_TABLE_PUBLIC)
+      .select('id,username')
+      .in('id', uploaderIds)
+      .then(({ data, error: err }) => {
+        if (!active) return
+        if (err) {
+          showToast(err.message, 'danger')
+          return
+        }
+        const next: Record<string, string> = {}
+        for (const row of (data ?? []) as Array<{ id: string; username: string | null }>) {
+          if (row.username?.trim()) next[row.id] = row.username.trim()
+        }
+        setUploaderNames(next)
+      })
+    return () => {
+      active = false
+    }
+  }, [papers, showToast])
+
   const isPdf =
     current.content_type?.toLowerCase().includes('pdf') ||
     current.storage_path.toLowerCase().endsWith('.pdf')
+  const uploaderLabel = uploaderNames[current.uploaded_by] ?? 'Unknown'
 
   return (
     <div className="modal-backdrop">
@@ -1452,6 +1978,7 @@ function PreviewModal({
           </button>
         </div>
         <p>{toMeta(current)}</p>
+        <p className="subtitle">Uploaded by ({uploaderLabel})</p>
         <div className="preview">
           {previewFailed ? (
             <p className="subtitle">Couldn&apos;t load preview.</p>
